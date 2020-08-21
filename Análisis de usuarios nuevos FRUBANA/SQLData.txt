@@ -1,0 +1,94 @@
+WITH GLOBAL AS
+  (SELECT all_seg.name segm, global_reports.*, global_pqrs.*
+   FROM
+     ( SELECT *
+      FROM query_4232 co_rep
+      UNION ALL SELECT *
+      FROM query_4263 mx_rep) global_reports
+   LEFT JOIN query_4554 all_seg ON global_reports.user_id = all_seg.user_id
+   LEFT JOIN
+     ( SELECT *
+      FROM query_4327 co_pqr
+      UNION ALL SELECT *
+      FROM query_4441 mx_pqr) global_pqrs ON global_reports.tracking_code = global_pqrs.tracking_code ),
+            condition1 AS
+  ( SELECT global.user_id, global.close_date, CAST(REPLACE(SUBSTR(GROUP_CONCAT(global.id,';'), 1, 6), ';', '')AS INT) first_order, COUNT(global.id) orders
+   FROM GLOBAL
+   WHERE global.status <> 5
+   GROUP BY global.user_id ),
+                       condition2 AS
+  ( SELECT global.user_id, MIN(global.id) cancelled
+   FROM GLOBAL
+   LEFT JOIN condition1 ON global.user_id = condition1.user_id
+   WHERE global.status = 5
+     AND global.id < condition1.first_order
+   GROUP BY global.user_id ),
+                                  base AS
+  ( SELECT global.*, CASE
+                         WHEN global.id = condition1.first_order THEN 1
+                         ELSE 0
+                     END AS first_order, condition1.orders, CASE
+                                                                WHEN global.user_id = condition2.user_id THEN 1
+                                                                ELSE 0
+                                                            END AS cancelled
+   FROM GLOBAL
+   LEFT JOIN condition1 ON global.user_id = condition1.user_id
+   LEFT JOIN condition2 ON global.user_id = condition2.user_id ),
+                                       corts AS
+  ( SELECT user_id, close_date, GROUP_CONCAT(order_type, '-') types
+   FROM base
+   GROUP BY close_date, user_id
+   HAVING types LIKE '%COURTESY%' ),
+                                             pq1 AS
+  ( SELECT user_id, COUNT(type_pqr_id) missing
+   FROM base
+   WHERE type_pqr_id = 5
+     AND first_order
+   GROUP BY user_id ),
+                                                 pq2 AS
+  ( SELECT user_id, COUNT(type_pqr_id) others
+   FROM base
+   WHERE type_pqr_id <> 5
+     AND first_order
+   GROUP BY user_id )
+SELECT base.segm SEGMENTO,
+       base.region_code CIUDAD,
+       base.user_id UID,
+                    base.cancelled CANCEL_PREV, --base.products PRODUCTOS,
+ --base.quantity CANTIDAD,
+ base.weight PESO,
+ CASE
+     WHEN base.region_code = 'CMX' THEN ROUND(base.subtotal / 22.55, 2)
+     ELSE ROUND(base.subtotal / 3653, 2)
+ END AS USD_SUBTOTAL,
+ CASE
+     WHEN base.order_type LIKE '%DISCOUNT%' THEN 1
+     ELSE 0
+ END AS DESCUENTOS,
+ CASE
+     WHEN corts.types IS NOT NULL THEN 1
+     ELSE 0
+ END AS CORTESIA,
+ CASE
+     WHEN pq1.missing IS NOT NULL THEN pq1.missing
+     ELSE 0
+ END AS FALTANTES,
+ CASE
+     WHEN pq2.others IS NOT NULL THEN pq2.others
+     ELSE 0
+ END AS PQRs,
+ STRFTIME('%H:%M', logi.hour) - STRFTIME('%H:%M', base.address_open_at) DEMORA,
+ CASE
+     WHEN base.orders > 1 THEN 1
+     ELSE 0
+ END AS VOLVIO
+FROM base
+INNER JOIN query_5012 logi ON base.tracking_code = logi.order_id
+LEFT JOIN corts ON base.user_id = corts.user_id
+LEFT JOIN pq1 ON base.user_id = pq1.user_id
+LEFT JOIN pq2 ON base.user_id = pq2.user_id
+WHERE first_order
+  AND SEGMENTO IS NOT NULL
+  AND SEGMENTO <> 'Donaciones'
+  AND USD_SUBTOTAL > 0
+GROUP BY base.user_id
